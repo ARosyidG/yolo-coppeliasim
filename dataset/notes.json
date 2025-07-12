@@ -1,0 +1,45 @@
+{
+  "categories": [
+    {
+      "id": 0,
+      "name": "blue(2x2x2)"
+    },
+    {
+      "id": 1,
+      "name": "blue(3x3x3)"
+    },
+    {
+      "id": 2,
+      "name": "blue(4x4x4)"
+    },
+    {
+      "id": 3,
+      "name": "green(2x2x2)"
+    },
+    {
+      "id": 4,
+      "name": "green(3x3x3)"
+    },
+    {
+      "id": 5,
+      "name": "green(4x4x4)"
+    },
+    {
+      "id": 6,
+      "name": "red(2x2x2)"
+    },
+    {
+      "id": 7,
+      "name": "red(3x3x3)"
+    },
+    {
+      "id": 8,
+      "name": "red(4x4x4)"
+    }
+  ],
+  "info": {
+    "year": 2025,
+    "version": "1.0",
+    "contributor": "Label Studio"
+  }
+}
