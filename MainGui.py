@@ -54,59 +54,17 @@ dh_params = [
 ]
 
 # Inverse kinematics function
-def inverse_kinematics(target_position):
+def inverse_kinematics(target_position, target_orientation=None):
     """
-    Calculate joint angles to reach target position
-    target_position: [x, y, z] in meters
-    Returns: list of joint angles in radians or None if unreachable
+    Analytical Inverse Kinematics for UR5 robot
+    target_position: [x, y, z] in meters (end-effector position)
+    target_orientation: Optional rotation matrix for end-effector orientation
+    Returns: list of 6 joint angles in radians or None if unreachable
     """
-    # Extract DH parameters
-    d1 = dh_params[0]['d']
-    a1_dh = dh_params[1]['a']
-    a2_dh = dh_params[2]['a']
-    d5 = dh_params[4]['d']
-    
-    # Assume end effector pointing down (approach vector = [0, 0, -1])
-    wrist_center = [
-        target_position[0],
-        target_position[1],
-        target_position[2] + d5  # Wrist center is above target by d5
+    joint_angles = [
     ]
     
-    # Joint 1 (theta1)
-    wx, wy, wz = wrist_center
-    theta1 = math.atan2(wy, wx) - dh_params[0]['offset']
-    
-    # Projection on XY plane
-    r = math.sqrt(wx**2 + wy**2)
-    z_planar = wz - d1
-    
-    # Distance from joint2 to wrist center
-    D = math.sqrt(r**2 + z_planar**2)
-    
-    # Check if position is reachable
-    if D > a1_dh + a2_dh or D < abs(a1_dh - a2_dh):
-        return None
-    
-    # Joint 3 (theta3) - elbow up solution
-    cos_theta3 = (a1_dh**2 + a2_dh**2 - D**2) / (2 * a1_dh * a2_dh)
-    if abs(cos_theta3) > 1:
-        return None
-    theta3 = math.acos(cos_theta3) - math.pi  # Elbow up configuration
-    raw_theta3 = theta3 - dh_params[2]['offset']
-    
-    # Joint 2 (theta2)
-    alpha = math.atan2(z_planar, r)
-    beta = math.atan2(a2_dh * math.sin(theta3), a1_dh + a2_dh * math.cos(theta3))
-    theta2 = alpha - beta - dh_params[1]['offset']
-    
-    # For simplicity, assume fixed orientation (pointing down)
-    # Joint 4, 5, 6
-    theta4 = 0 - dh_params[3]['offset']  # -offset
-    theta5 = math.pi/2 - dh_params[4]['offset']  # Pointing down
-    theta6 = 0 - dh_params[5]['offset']
-    
-    return [theta1, theta2, raw_theta3, theta4, theta5, theta6]
+    return joint_angles
 
 # Video capture thread function
 def video_capture_thread(url):
@@ -328,28 +286,39 @@ class ImageDetectionAPP:
         sliderX.configure(command=lambda value: self.setDebuggingSliders("x", float(value)))
         sliderY.configure(command=lambda value: self.setDebuggingSliders("y", float(value)))
         
-        
+        self.JointButtonContainer = tk.Frame(self.KinematicFrame, relief="groove")
+        self.JointButtonContainer.grid(row=0, column=0, sticky="nsew", pady=15)
+        self.JointButtonContainer.grid_columnconfigure(0, weight=1)
+        self.JointButtonContainer.grid_rowconfigure(0, weight=1)
+        self.JointButtonContainer.grid_rowconfigure(1, weight=1)
         # Create "Go to Target" button
         self.goto_button = tk.Button(
-            self.KinematicFrame, 
+            self.JointButtonContainer, 
             text="Go to Target",
             command=self.goto_target_callback,
-            height=2,
             bg="#4CAF50",
             fg="white"
         )
         self.goto_button.grid(row=0, column=0, sticky="nsew")
+        self.reset_Joint_btn = tk.Button(
+            self.JointButtonContainer,
+            text="Reset Joints",
+            command=self.reset_joint,
+            bg="#f44336",
+            fg="white"
+        )
+        self.reset_Joint_btn.grid(row=1, column=0, sticky="nsew")
     
     
     def changeMode(self, event):
         currentMode = self.current_Mode.get()
         if currentMode == "SimIK":
             self.DebugingSlidersFrame.grid_remove()
-            self.goto_button.grid(row=0, column=0, sticky="nsew", pady=15)
+            self.JointButtonContainer.grid(row=0, column=0, sticky="nsew", pady=15)
             self.KinematicFrame.grid_columnconfigure(1, weight=0)
         elif currentMode == "Manual":
             self.DebugingSlidersFrame.grid(row=0, column=0, sticky="ew", pady=5)
-            self.goto_button.grid(row=0, column=1, sticky="nsew", pady=15)
+            self.JointButtonContainer.grid(row=0, column=1, sticky="nsew", pady=15)
             self.KinematicFrame.grid_columnconfigure(1, weight=1)
         pass
     def showIsDebugingValue(self):
@@ -357,7 +326,10 @@ class ImageDetectionAPP:
             
     def setDebuggingSliders(self, direction, value):
         self.DebuggingValue[direction] = value
-        
+    def reset_joint(self):
+        for i in range(6):
+            sim.setJointTargetPosition(self.joint_handles[i], 0)
+            self.jointslidersVar[i].set(0)
     def goto_target_callback(self):
         if self.current_Mode.get() == "SimIK":
             simIK.setGroupCalculation(self.IKEnvorement,self.IKGroup,simIK.method_damped_least_squares,0.1,100)
@@ -375,26 +347,39 @@ class ImageDetectionAPP:
                 posDegree = math.degrees(pos)
                 self.jointslidersVar[i].set(posDegree)
             return
+        # Get target position and orientation
         target_position = sim.getObjectPosition(target, -1)
-        x_real, y_real = self.DebuggingValue["x"], self.DebuggingValue["y"]
-        if not self.isDebugging.get():
-            x_real, y_real = target_position[0], target_position[1]
+        # 0.2 is just dummy value for debugging
+        x_real, y_real, z_real = self.DebuggingValue["x"], self.DebuggingValue["y"],  0.2
         
-        # Convert to meters (CoppeliaSim uses meters)
+        print("Target position:", target_position)
+        
+        if not self.isDebugging.get():
+            x_real, y_real, z_real = target_position[0], target_position[1], target_position[2]
+
         x_m = x_real
         y_m = y_real
-        z_m = 0.1  # Fixed height above table (10cm)
+        z_m = z_real
         
-        # Calculate inverse kinematics
-        joint_angles = inverse_kinematics([x_m, y_m, z_m])
+        # Assume downward orientation (rotated -90° about X-axis)
+        target_orientation = np.array([
+            [1, 0, 0],
+            [0, 0, 1],
+            [0, -1, 0]
+        ])
+        
+        # Calculate IK
+        joint_angles = inverse_kinematics(
+            [x_m, y_m, z_m],
+            target_orientation
+        )
         
         if joint_angles is None:
             messagebox.showerror("Error", "Target position unreachable")
             return
-            
+        
         # Set joint angles in CoppeliaSim
         for i in range(6):
-            print(f"joint {i} : {joint_angles[i]}")
             sim.setJointTargetPosition(self.joint_handles[i], joint_angles[i])
             
         self.status_var.set(f"Moving to target at ({x_real:.1f}, {y_real:.1f}) cm")  
@@ -626,7 +611,7 @@ class ImageDetectionAPP:
         # Update data display
         self.update_calibration_display()
         self.status_var.set(f"Added calibration point: Pixel ({px}, {py}) -> Real ({real_x}, {real_y})")
-
+    
     def update_calibration_display(self):
         self.data_text.config(state="normal")
         self.data_text.delete(1.0, "end")
