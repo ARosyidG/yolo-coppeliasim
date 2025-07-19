@@ -50,21 +50,59 @@ dh_params = [
     {'d': 0.0000, 'a': 0.3922, 'alpha': 0, 'offset': 0},
     {'d': 0.0397, 'a': 0.0000, 'alpha': -math.pi/2, 'offset': -math.pi/2},
     {'d': 0.0492, 'a': 0.0000, 'alpha': -math.pi/2, 'offset': math.pi/2},
-    {'d': 0.0000, 'a': 0.0000, 'alpha': 0, 'offset': 0}
+    {'d': 0.0749, 'a': 0.0000, 'alpha': 0, 'offset': 0}
 ]
 
 # Inverse kinematics function
-def inverse_kinematics(target_position, target_orientation=None):
-    """
-    Analytical Inverse Kinematics for UR5 robot
-    target_position: [x, y, z] in meters (end-effector position)
-    target_orientation: Optional rotation matrix for end-effector orientation
-    Returns: list of 6 joint angles in radians or None if unreachable
-    """
-    joint_angles = [
-    ]
+def inverse_kinematics(target_position):
+    theta1, theta2, theta3, theta4, theta5, theta6 = 0,0,0,0,0,0
+    x, y, z = target_position
+    d1 = dh_params[0]['d']
+    a2 = dh_params[1]['a']
+    a3 = dh_params[2]['a']
+    d4 = dh_params[3]['d']
+    d5 = dh_params[4]['d']
+    d6 = dh_params[5]['d']
+    # solve for joint 1
+    theta1_total = math.atan2(y, x)
+    theta1 = theta1_total - dh_params[0]['offset']  # Account for offset
     
-    return joint_angles
+    # Project target to xy-plane and calculate radial distance
+    r = math.sqrt(x**2 + (y-d5)**2)
+    h = z + d6 -d1 
+    # print(f"h: {h}") 
+    D = math.sqrt(r**2 + h**2)
+    print (f"D: {D}")
+    
+    # Check if target is reachable
+    if D < abs(a2 - a3) - 1e-6 or D > a2 + a3 + 1e-6:
+        print("Target position is out of workspace")
+        return None
+    
+    
+    
+    # calculate joint2 and target angle in 0 state
+    joint2ToTargetCurrentAngle = math.acos(h/D)
+    
+    print(f"joint2ToTargetCurrentAngle: {joint2ToTargetCurrentAngle}")
+    
+    # Calculate joint3 and joint2 using law of cosines
+    # joint2 to joint3 distance = a2
+    # joint3 to joint4 distance = a3
+    # joint2 to joint4 distance = D
+    
+    theta2 = joint2ToTargetCurrentAngle-math.acos((a2**2 + D**2 - a3**2) / (2 * a2 * D))
+    theta3 = math.pi-math.acos((a2**2 + a3**2 - D**2) / (2 * a2 * a3))
+    
+    # so it parallel to the ground
+    theta4 = (math.acos((a3**2 + D**2 - a2**2)/(2 * a3 * D))*(-1)) + (math.pi/2-joint2ToTargetCurrentAngle)
+    
+    print (f"theta2: {math.degrees(theta2)}, theta3: {math.degrees(theta3)}, theta4: {math.degrees(theta4)}")
+    # print(f"pi : {math.degrees(math.pi)}")
+    theta5 = -math.pi/2
+    theta6 = 0.0
+    
+    return [theta1, theta2, theta3, theta4, theta5, theta6]
 
 # Video capture thread function
 def video_capture_thread(url):
@@ -444,7 +482,7 @@ class ImageDetectionAPP:
         # 0.2 is just dummy value for debugging
         x_real, y_real, z_real = self.DebuggingValue["x"], self.DebuggingValue["y"],  0.2
         
-        print("Target position:", target_position)
+        # print("Target position:", target_position)
         
         if not self.isDebugging.get():
             x_real, y_real, z_real = target_position[0], target_position[1], target_position[2]
@@ -453,17 +491,12 @@ class ImageDetectionAPP:
         y_m = y_real
         z_m = z_real
         
-        # Assume downward orientation (rotated -90° about X-axis)
-        target_orientation = np.array([
-            [1, 0, 0],
-            [0, 0, 1],
-            [0, -1, 0]
-        ])
+        
+        print(f"Target position: ({x_m}, {y_m}, {z_m})")
         
         # Calculate IK
         joint_angles = inverse_kinematics(
-            [x_m, y_m, z_m],
-            target_orientation
+            [x_m, y_m, z_m]
         )
         
         if joint_angles is None:
@@ -473,12 +506,13 @@ class ImageDetectionAPP:
         # Set joint angles in CoppeliaSim
         for i in range(6):
             sim.setJointTargetPosition(self.joint_handles[i], joint_angles[i])
+            self.jointslidersVar[i].set(math.degrees(joint_angles[i]))
             
         self.status_var.set(f"Moving to target at ({x_real:.1f}, {y_real:.1f}) cm")  
 
     # Set target positions in CoppeliaSim
     def slider_moved(self, joint_index, degrees):
-        print("Slider moved:", joint_index, "Value:", degrees)
+        # print("Slider moved:", joint_index, "Value:", degrees)
         if joint_index < len(self.joint_handles) and self.joint_handles[joint_index]:
             radians = math.radians(degrees)
             sim.setJointTargetPosition(self.joint_handles[joint_index], radians)
