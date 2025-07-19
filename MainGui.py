@@ -121,7 +121,6 @@ class ImageDetectionAPP:
         self.Modes = ["SimIK", "Manual"]        
         self.current_Mode = tk.StringVar(value=self.Modes[0])
         
-               
         # SimIK Set-UP
         UR5Base = sim.getObject('/UR5')
         UR5Tip = sim.getObject('/connection')
@@ -129,6 +128,9 @@ class ImageDetectionAPP:
         self.IKGroup = simIK.createGroup(self.IKEnvorement)
         ikElement,simToIkObjectMap,ikToSimObjectMap=simIK.addElementFromScene(self.IKEnvorement,self.IKGroup,UR5Base,UR5Tip,target,simIK.constraint_position)
         
+        # SimIK thread management
+        self.simik_running = False
+        self.simik_thread = None
         
         self.vidURL = vidURL
         self.joint_handles = []
@@ -190,6 +192,9 @@ class ImageDetectionAPP:
         
         # Start frame processing
         self.update_video_feed()
+        
+        # Handle window closing
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
     def create_slider_area(self):
         # Create frame for slider controls
@@ -247,7 +252,16 @@ class ImageDetectionAPP:
         self.KinematicFrame.grid_columnconfigure(0, weight=1)
         self.KinematicFrame.grid_columnconfigure(1, weight=0)
         
+        self.isFollowTargetContinuous = tk.BooleanVar(value=False)
+        self.isFollowTargetCheckbox = tk.Checkbutton(
+            self.KinematicFrame, 
+            text="Follow Target Continuously", 
+            variable=self.isFollowTargetContinuous,
+            command=self.toggle_simik
+        )
+        self.isFollowTargetCheckbox.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
         
+                
         # debuging sliders
         self.DebugingSlidersFrame = tk.LabelFrame(self.KinematicFrame, text="Debugging slider", padx=10, pady=10)
         self.DebugingSlidersFrame.grid_columnconfigure(0, weight=1)
@@ -287,7 +301,7 @@ class ImageDetectionAPP:
         sliderY.configure(command=lambda value: self.setDebuggingSliders("y", float(value)))
         
         self.JointButtonContainer = tk.Frame(self.KinematicFrame, relief="groove")
-        self.JointButtonContainer.grid(row=0, column=0, sticky="nsew", pady=15)
+        self.JointButtonContainer.grid(row=1, column=0, sticky="nsew", pady=5)
         self.JointButtonContainer.grid_columnconfigure(0, weight=1)
         self.JointButtonContainer.grid_rowconfigure(0, weight=1)
         self.JointButtonContainer.grid_rowconfigure(1, weight=1)
@@ -309,44 +323,122 @@ class ImageDetectionAPP:
         )
         self.reset_Joint_btn.grid(row=1, column=0, sticky="nsew")
     
-    
     def changeMode(self, event):
         currentMode = self.current_Mode.get()
         if currentMode == "SimIK":
             self.DebugingSlidersFrame.grid_remove()
-            self.JointButtonContainer.grid(row=0, column=0, sticky="nsew", pady=15)
+            self.isFollowTargetCheckbox.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+            self.JointButtonContainer.grid(row=1, column=0, sticky="nsew", pady=5)
             self.KinematicFrame.grid_columnconfigure(1, weight=0)
         elif currentMode == "Manual":
+            self.isFollowTargetCheckbox.grid_remove()
             self.DebugingSlidersFrame.grid(row=0, column=0, sticky="ew", pady=5)
-            self.JointButtonContainer.grid(row=0, column=1, sticky="nsew", pady=15)
+            self.JointButtonContainer.grid(row=0, column=1, sticky="nsew", pady=5)
             self.KinematicFrame.grid_columnconfigure(1, weight=1)
-        pass
+    
     def showIsDebugingValue(self):
         self.status_var.set(f"Debugging is {self.isDebugging.get()}")
             
     def setDebuggingSliders(self, direction, value):
         self.DebuggingValue[direction] = value
+    
     def reset_joint(self):
+        if self.isFollowTargetContinuous.get():
+            messagebox.showwarning("warning","continuous SimIK is running, stop it first")
+            return
         for i in range(6):
             sim.setJointTargetPosition(self.joint_handles[i], 0)
             self.jointslidersVar[i].set(0)
-    def goto_target_callback(self):
-        if self.current_Mode.get() == "SimIK":
-            simIK.setGroupCalculation(self.IKEnvorement,self.IKGroup,simIK.method_damped_least_squares,0.1,100)
-            options = {
-                'syncWorlds': True,
-                'allowError': True
-            }
-            result,flags,precision=simIK.handleGroup(self.IKEnvorement,self.IKGroup,options)
+    
+    def toggle_simik(self):
+        if self.isFollowTargetContinuous.get():
+            self.start_simik_thread()
+        else:
+            self.stop_simik_thread()
+    
+    def start_simik_thread(self):
+        """Start continuous SimIK calculation in a thread"""
+        if self.simik_running:
+            return
             
-            print(result == simIK.result_success)
-            print(flags)
-            print(precision)
+        self.simik_running = True
+        self.simik_thread = threading.Thread(
+            target=self.run_simik_continuous,
+            daemon=True
+        )
+        self.simik_thread.start()
+        self.status_var.set("Continuous SimIK started")
+    
+    def stop_simik_thread(self):
+        """Stop continuous SimIK calculation"""
+        if not self.simik_running:
+            return
+            
+        self.simik_running = False
+        if self.simik_thread and self.simik_thread.is_alive():
+            self.simik_thread.join(1.0)
+        self.status_var.set("Continuous SimIK stopped")
+    
+    def run_simik_continuous(self):
+        """Run SimIK continuously while flag is set"""
+        simIK.setGroupCalculation(
+            self.IKEnvorement, 
+            self.IKGroup, 
+            simIK.method_damped_least_squares, 
+            0.1, 
+            100
+        )
+        options = {'syncWorlds': True, 'allowError': True}
+        
+        while self.simik_running:
+            try:
+                self.run_simik_once()
+                time.sleep(0.05) 
+            except Exception as e:
+                print(f"Error in continuous SimIK: {e}")
+                self.status_var.set(f"SimIK error: {str(e)}")
+                break
+    
+    def run_simik_once(self):
+        """Run a single SimIK calculation"""
+        try:
+            # Perform IK calculation
+            options = {'syncWorlds': True, 'allowError': True}
+            result, flags, precision = simIK.handleGroup(
+                self.IKEnvorement, 
+                self.IKGroup, 
+                options
+            )
+            
+            # Get joint positions and update GUI
+            joint_angles_deg = []
             for i in range(6):
                 pos = sim.getJointTargetPosition(self.joint_handles[i])
-                posDegree = math.degrees(pos)
-                self.jointslidersVar[i].set(posDegree)
+                pos_deg = math.degrees(pos)
+                joint_angles_deg.append(pos_deg)
+            
+            # Update GUI in main thread
+            self.root.after(0, self.update_sliders, joint_angles_deg)
+            return True
+        except Exception as e:
+            print(f"Error in SimIK: {e}")
+            self.status_var.set(f"SimIK error: {str(e)}")
+            return False
+    
+    def update_sliders(self, angles):
+        for i in range(6):
+            current_val = self.jointslidersVar[i].get()
+            if abs(current_val - angles[i]) > 0.5:
+                self.jointslidersVar[i].set(angles[i])
+    
+    def goto_target_callback(self):
+        if self.current_Mode.get() == "SimIK":
+            # Run SimIK once
+            if self.run_simik_once():
+                self.status_var.set("SimIK calculation completed")
             return
+            
+        # Manual mode - use inverse kinematics
         # Get target position and orientation
         target_position = sim.getObjectPosition(target, -1)
         # 0.2 is just dummy value for debugging
@@ -383,7 +475,7 @@ class ImageDetectionAPP:
             sim.setJointTargetPosition(self.joint_handles[i], joint_angles[i])
             
         self.status_var.set(f"Moving to target at ({x_real:.1f}, {y_real:.1f}) cm")  
-        
+
     # Set target positions in CoppeliaSim
     def slider_moved(self, joint_index, degrees):
         print("Slider moved:", joint_index, "Value:", degrees)
@@ -726,6 +818,11 @@ class ImageDetectionAPP:
             self.status_var.set(f"Loaded {len(calibration_points)} calibration points")
         except Exception as e:
             messagebox.showerror("Error", f"Error loading calibration data: {e}")
+    
+    def on_closing(self):
+        """Handle window closing event"""
+        self.stop_simik_thread()
+        self.root.destroy()
 
 # Run the application
 if __name__ == "__main__":
